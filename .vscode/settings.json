@@ -1,0 +1,8 @@
+{
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.formatOnPaste": true,
+  "[javascript, typescript]": {
+    "editor.formatOnSave": true,
+    "editor.tabSize": 2
+  }
+}
