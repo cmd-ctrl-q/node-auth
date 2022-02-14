@@ -5,6 +5,7 @@ import bcryptjs from 'bcryptjs';
 import { sign, verify } from 'jsonwebtoken';
 import speakeasy from 'speakeasy';
 import qrcode from 'qrcode';
+import { OAuth2Client } from 'google-auth-library';
 
 export const Register = async (req: Request, res: Response) => {
   const body = req.body;
@@ -62,15 +63,6 @@ export const Login = async (req: Request, res: Response) => {
     otpauth_url: secret.otpauth_url, // generate QR code
   });
 };
-
-// export const QR = (req: Request, res: Response) => {
-//   qrcode.toDataURL(
-//     'otpauth://totp/My%20App?secret=MIUDQP2OJJWTY32BLVYFOTL2IRKWG7KOFFFEMI3JIRVUIJJTHIUQ',
-//     (err, data) => {
-//       res.send(`<img src="${data}" />`);
-//     }
-//   );
-// };
 
 export const TwoFactor = async (req: Request, res: Response) => {
   try {
@@ -218,5 +210,76 @@ export const Logout = async (req: Request, res: Response) => {
 
   res.send({
     message: 'successfully deleted cookie',
+  });
+};
+
+export const GoogleAuth = async (req: Request, res: Response) => {
+  // google auth token
+  const { token } = req.body;
+
+  // verify token
+  const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+  // get ticket
+  const ticket = await client.verifyIdToken({
+    idToken: token,
+    audience: process.env.GOOGLE_CLIENT_ID,
+  });
+
+  // get payload
+  const payload = ticket.getPayload();
+
+  if (!payload) {
+    return res.status(401).send({
+      message: 'unauthenticated',
+    });
+  }
+
+  const repository = getRepository(User);
+
+  let user = await repository.findOne({ email: payload.email });
+
+  // if no user, create new user
+  if (!user) {
+    user = await repository.save({
+      first_name: payload.given_name,
+      last_name: payload.family_name,
+      email: payload.email,
+      password: await bcryptjs.hash(token, 12),
+    });
+  }
+
+  // create 30 second access token
+  const accessToken = sign(
+    {
+      id: user.id, // payload stored in jwt
+    },
+    process.env.ACCESS_SECRET || '',
+    { expiresIn: '30s' }
+  );
+
+  // create 7 day refresh token
+  const refreshToken = sign(
+    {
+      id: user.id, // payload stored in jwt
+    },
+    process.env.REFRESH_SECRET || '',
+    { expiresIn: '1w' }
+  );
+
+  // store access token in cookie
+  res.cookie('access_token', accessToken, {
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000, // 1 day
+  });
+
+  // store refresh token in cookie
+  res.cookie('refresh_token', refreshToken, {
+    httpOnly: true,
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  });
+
+  res.send({
+    message: 'success',
   });
 };

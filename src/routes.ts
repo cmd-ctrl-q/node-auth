@@ -6,6 +6,7 @@ import {
   Refresh,
   Logout,
   TwoFactor,
+  GoogleAuth,
 } from './controller/auth.controler';
 import { ForgotPassword, ResetPassword } from './controller/forgot.controller';
 
@@ -16,6 +17,7 @@ export const routes = (router: Router) => {
   router.get('/api/user', AuthenticatedUser);
   router.post('/api/refresh', Refresh);
   router.post('/api/logout', Logout);
+  router.post('/api/google-auth', GoogleAuth);
   router.post('/api/forgot', ForgotPassword);
   router.post('/api/reset', ResetPassword);
 };
