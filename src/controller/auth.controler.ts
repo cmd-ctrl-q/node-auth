@@ -1,11 +1,12 @@
 import { Request, Response } from 'express';
-import { getRepository } from 'typeorm';
+import { getRepository, MoreThanOrEqual } from 'typeorm';
 import { User } from '../entity/user.entity';
 import bcryptjs from 'bcryptjs';
 import { sign, verify } from 'jsonwebtoken';
 import speakeasy from 'speakeasy';
 import qrcode from 'qrcode';
 import { OAuth2Client } from 'google-auth-library';
+import { Token } from '../entity/token.entity';
 
 export const Register = async (req: Request, res: Response) => {
   const body = req.body;
@@ -103,15 +104,6 @@ export const TwoFactor = async (req: Request, res: Response) => {
 
     // if QR code is valid, continue to create access and refresh tokens
 
-    // create 30 second access token
-    const accessToken = sign(
-      {
-        id: user.id, // payload stored in jwt
-      },
-      process.env.ACCESS_SECRET || '',
-      { expiresIn: '30s' }
-    );
-
     // create 7 day refresh token
     const refreshToken = sign(
       {
@@ -121,28 +113,46 @@ export const TwoFactor = async (req: Request, res: Response) => {
       { expiresIn: '1w' }
     );
 
-    // store access token in cookie
-    res.cookie('access_token', accessToken, {
-      httpOnly: true,
-      maxAge: 24 * 60 * 60 * 1000, // 1 day
-    });
-
     // store refresh token in cookie
     res.cookie('refresh_token', refreshToken, {
       httpOnly: true,
+      sameSite: 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     });
 
-    res.send({ ok: true, message: 'success' });
-  } catch (err) {}
+    const expired_at = new Date();
+    expired_at.setDate(expired_at.getDate() + 7);
+
+    // save token
+    await getRepository(Token).save({
+      user_id: id,
+      token: refreshToken,
+      expired_at,
+    });
+
+    // create 30 second access token
+    const token = sign(
+      {
+        id: user.id, // payload stored in jwt
+      },
+      process.env.ACCESS_SECRET || '',
+      { expiresIn: '30s' }
+    );
+
+    res.send({ ok: true, token });
+  } catch (err) {
+    return res.status(401).send({
+      message: 'unauthenticated',
+    });
+  }
 };
 
 export const AuthenticatedUser = async (req: Request, res: Response) => {
   try {
-    // get access_token cookie
-    const cookie = req.cookies['access_token'];
+    // get access token from authorization header
+    const accessToken = req.header('Authorization')?.split(' ')[1] || '';
 
-    const payload: any = verify(cookie, process.env.ACCESS_SECRET || '');
+    const payload: any = verify(accessToken, process.env.ACCESS_SECRET || '');
 
     if (!payload) {
       return res.status(401).send({
@@ -181,8 +191,19 @@ export const Refresh = async (req: Request, res: Response) => {
       });
     }
 
+    const refreshToken = await getRepository(Token).findOne({
+      user_id: payload.id,
+      expired_at: MoreThanOrEqual(new Date()),
+    });
+
+    if (!refreshToken) {
+      return res.status(401).send({
+        message: 'unauthenticated',
+      });
+    }
+
     // create access token
-    const accessToken = sign(
+    const token = sign(
       {
         id: payload.id, // payload id stored in jwt
       },
@@ -190,12 +211,7 @@ export const Refresh = async (req: Request, res: Response) => {
       { expiresIn: '30s' }
     );
 
-    res.cookie('access_token', accessToken, {
-      httpOnly: true,
-      maxAge: 24 * 60 * 60 * 1000, // 1 days
-    });
-
-    return res.send({ message: 'success' });
+    return res.send({ token, message: 'success' });
   } catch (err) {
     return res.status(401).send({
       message: 'unauthenticated',
@@ -204,8 +220,12 @@ export const Refresh = async (req: Request, res: Response) => {
 };
 
 export const Logout = async (req: Request, res: Response) => {
-  // delete cookie
-  res.cookie('access_token', { maxAge: 0 });
+  // delete refresh token from db
+  await getRepository(Token).delete({
+    token: req.cookies['refresh_token'],
+  });
+
+  // delete refresh token from cookie
   res.cookie('refresh_token', { maxAge: 0 });
 
   res.send({
@@ -243,20 +263,11 @@ export const GoogleAuth = async (req: Request, res: Response) => {
   if (!user) {
     user = await repository.save({
       first_name: payload.given_name,
-      last_name: payload.family_name,
+      last_name: payload.family_name || '',
       email: payload.email,
       password: await bcryptjs.hash(token, 12),
     });
   }
-
-  // create 30 second access token
-  const accessToken = sign(
-    {
-      id: user.id, // payload stored in jwt
-    },
-    process.env.ACCESS_SECRET || '',
-    { expiresIn: '30s' }
-  );
 
   // create 7 day refresh token
   const refreshToken = sign(
@@ -267,19 +278,31 @@ export const GoogleAuth = async (req: Request, res: Response) => {
     { expiresIn: '1w' }
   );
 
-  // store access token in cookie
-  res.cookie('access_token', accessToken, {
-    httpOnly: true,
-    maxAge: 24 * 60 * 60 * 1000, // 1 day
-  });
-
   // store refresh token in cookie
   res.cookie('refresh_token', refreshToken, {
     httpOnly: true,
+    sameSite: 'lax',
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   });
 
+  const expired_at = new Date();
+  expired_at.setDate(expired_at.getDate() + 7);
+
+  // save token
+  await getRepository(Token).save({
+    user_id: user.id,
+    token: refreshToken,
+    expired_at,
+  });
+
+  // create and send 30 second access token
   res.send({
-    message: 'success',
+    message: sign(
+      {
+        id: user.id, // payload stored in jwt
+      },
+      process.env.ACCESS_SECRET || '',
+      { expiresIn: '30s' }
+    ),
   });
 };
